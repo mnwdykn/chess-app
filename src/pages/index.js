@@ -4,21 +4,34 @@ import { Chessboard } from "react-chessboard";
 
 export default function Home() {
   const [game, setGame] = useState(new Chess());
-  const [engine, setEngine] = useState(null);
   const engineRef = useRef(null);
   const [highlightSquares, setHighlightSquares] = useState({});
   const [isGameOver, setIsGameOver] = useState(false);
   const [resultText, setResultText] = useState("");
 
-  const initEngine = () => {
+  const [selectedLevel, setSelectedLevel] = useState(10); // デフォルトレベル
+  const [gameStarted, setGameStarted] = useState(false);
+
+  const initEngine = (skillLevel) => {
     const worker = new Worker("/stockfish.js");
+    engineRef.current = worker;
+
     worker.postMessage("uci");
 
     worker.onmessage = (e) => {
+      const { data } = e;
+
+      // レベル設定は "uciok" を受け取った後に行う
+      if (data === "uciok") {
+        worker.postMessage(`setoption name Skill Level value ${skillLevel}`);
+        worker.postMessage("isready");
+        return;
+      }
+
       if (isGameOver) return;
 
-      if (e.data.startsWith("bestmove")) {
-        const move = e.data.split(" ")[1];
+      if (data.startsWith("bestmove")) {
+        const move = data.split(" ")[1];
         if (move === "0000" || move === "(none)") return;
 
         const from = move.slice(0, 2);
@@ -26,8 +39,6 @@ export default function Home() {
 
         setGame((prevGame) => {
           const gameCopy = new Chess(prevGame.fen());
-
-          // 合法手かチェック（念のため）
           const legalMoves = gameCopy.moves({ verbose: true });
           const isLegal = legalMoves.some(
             (m) => m.from === from && m.to === to
@@ -48,24 +59,15 @@ export default function Home() {
 
           if (gameCopy.isGameOver()) {
             handleGameOver(gameCopy);
-            return gameCopy;
           }
 
           return gameCopy;
         });
+      } else {
+        console.log("Engine:", data);
       }
     };
-
-    engineRef.current = worker;
-    setEngine(worker);
   };
-
-  useEffect(() => {
-    initEngine();
-    return () => {
-      engineRef.current?.terminate();
-    };
-  }, []);
 
   const handleGameOver = (gameCopy) => {
     engineRef.current?.terminate();
@@ -81,7 +83,18 @@ export default function Home() {
   };
 
   const handleRestart = () => {
-    window.location.reload(); // ✅ ページを完全に再読み込み
+    // 状態を初期化
+    setGame(new Chess());
+    setHighlightSquares({});
+    setIsGameOver(false);
+    setResultText("");
+    setGameStarted(false);
+    engineRef.current?.terminate();
+  };
+
+  const handleStartGame = () => {
+    setGameStarted(true);
+    initEngine(selectedLevel);
   };
 
   const onDrop = (sourceSquare, targetSquare) => {
@@ -111,15 +124,14 @@ export default function Home() {
     const result = gameCopy.move(move);
     if (result) {
       setHighlightSquares({});
+      setGame(gameCopy);
 
       if (gameCopy.isGameOver()) {
         handleGameOver(gameCopy);
-        return true;
+      } else {
+        engineRef.current?.postMessage(`position fen ${gameCopy.fen()}`);
+        engineRef.current?.postMessage("go depth 12");
       }
-
-      setGame(gameCopy);
-      engineRef.current?.postMessage(`position fen ${gameCopy.fen()}`);
-      engineRef.current?.postMessage("go depth 12");
     }
 
     return result !== null;
@@ -154,31 +166,64 @@ export default function Home() {
     <div style={{ padding: 20 }}>
       <h1>チェス vs Stockfish</h1>
 
-      {isGameOver && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ color: "red", fontWeight: "bold", fontSize: "1.1rem" }}>
-            {resultText}
-          </div>
-          <button onClick={handleRestart} style={{ marginTop: 8 }}>
-            もう一度プレイする
+      {!gameStarted && (
+        <div style={{ marginBottom: 20 }}>
+          <label>
+            レベル選択（0〜20）：
+            <select
+              value={selectedLevel}
+              onChange={(e) => setSelectedLevel(Number(e.target.value))}
+              style={{ marginLeft: 8 }}
+            >
+              {Array.from({ length: 21 }, (_, i) => (
+                <option key={i} value={i}>
+                  {i}
+                </option>
+              ))}
+            </select>
+          </label>
+          <br />
+          <button onClick={handleStartGame} style={{ marginTop: 12 }}>
+            ゲーム開始
           </button>
         </div>
       )}
 
-      {!isGameOver && game.inCheck() && (
-        <div style={{ color: "red", marginBottom: 10, fontWeight: "bold" }}>
-          チェック中です！
-        </div>
-      )}
+      {gameStarted && (
+        <>
+          {isGameOver && (
+            <div style={{ marginBottom: 12 }}>
+              <div
+                style={{
+                  color: "red",
+                  fontWeight: "bold",
+                  fontSize: "1.1rem",
+                }}
+              >
+                {resultText}
+              </div>
+              <button onClick={handleRestart} style={{ marginTop: 8 }}>
+                もう一度プレイする
+              </button>
+            </div>
+          )}
 
-      <Chessboard
-        position={game.fen()}
-        onPieceDrop={onDrop}
-        onPieceDragBegin={onPieceDragBegin}
-        onPieceDragEnd={() => setHighlightSquares({})}
-        customSquareStyles={highlightSquares}
-        boardWidth={500}
-      />
+          {!isGameOver && game.inCheck() && (
+            <div style={{ color: "red", marginBottom: 10, fontWeight: "bold" }}>
+              チェック中です！
+            </div>
+          )}
+
+          <Chessboard
+            position={game.fen()}
+            onPieceDrop={onDrop}
+            onPieceDragBegin={onPieceDragBegin}
+            onPieceDragEnd={() => setHighlightSquares({})}
+            customSquareStyles={highlightSquares}
+            boardWidth={500}
+          />
+        </>
+      )}
     </div>
   );
 }
